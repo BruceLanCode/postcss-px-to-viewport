@@ -24,73 +24,99 @@ var defaults = {
 var ignoreNextComment = 'px-to-viewport-ignore-next';
 var ignorePrevComment = 'px-to-viewport-ignore';
 
-var plugin = function(options) {
-  var opts = objectAssign({}, defaults, options);
-  
-  checkRegExpOrArray(opts, 'exclude');
-  checkRegExpOrArray(opts, 'include');
-  
-  var pxRegex = getUnitRegexp(opts.unitToConvert);
-  var satisfyPropList = createPropListMatcher(opts.propList);
-  var landscapeRules = [];
-
+var plugin = function(options) { 
   return {
-    postcssPlugin: 'postcss8-px-to-viewport',
-    Once: function(css, { result, AtRule }) {
-      css.walkRules(function (rule) {
-        // Add exclude option to ignore some files like 'node_modules'
-        var file = rule.source && rule.source.input.file;
+    postcssPlugin: 'postcss-8-px-to-viewport',
+    prepare(result) {
+      var opts = objectAssign({}, defaults, options);
       
-        if (opts.include && file) {
-          if (Object.prototype.toString.call(opts.include) === '[object RegExp]') {
-            if (!opts.include.test(file)) return;
-          } else if (Object.prototype.toString.call(opts.include) === '[object Array]') {
-            var flag = false;
-            for (var i = 0; i < opts.include.length; i++) {
-              if (opts.include[i].test(file)) {
-                flag = true;
-                break;
+      checkRegExpOrArray(opts, 'exclude');
+      checkRegExpOrArray(opts, 'include');
+      
+      var pxRegex = getUnitRegexp(opts.unitToConvert);
+      var satisfyPropList = createPropListMatcher(opts.propList);
+      var landscapeRules = [];
+      return {
+        OnceExit: function(css, { AtRule }) {      
+          if (landscapeRules.length > 0) {
+            var landscapeRoot = new AtRule({ params: '(orientation: landscape)', name: 'media' });
+          
+            landscapeRules.forEach(function(rule) {
+              landscapeRoot.append(rule);
+            });
+            css.append(landscapeRoot);
+          }
+        },
+        Rule(rule) {
+          // Add exclude option to ignore some files like 'node_modules'
+          var file = rule.source && rule.source.input.file;
+          var isBreak = false
+          if (opts.include && file) {
+            if (Object.prototype.toString.call(opts.include) === '[object RegExp]') {
+              if (!opts.include.test(file)) isBreak = true;
+            } else if (Object.prototype.toString.call(opts.include) === '[object Array]') {
+              var flag = false;
+              for (var i = 0; i < opts.include.length; i++) {
+                if (opts.include[i].test(file)) {
+                  flag = true;
+                  break;
+                }
+              }
+              if (!flag) isBreak = true;
+            }
+          }
+        
+          if (opts.exclude && file) {
+            if (Object.prototype.toString.call(opts.exclude) === '[object RegExp]') {
+              if (opts.exclude.test(file)) isBreak = true;
+            } else if (Object.prototype.toString.call(opts.exclude) === '[object Array]') {
+              for (var i = 0; i < opts.exclude.length; i++) {
+                if (opts.exclude[i].test(file)) isBreak = true;
               }
             }
-            if (!flag) return;
           }
-        }
-      
-        if (opts.exclude && file) {
-          if (Object.prototype.toString.call(opts.exclude) === '[object RegExp]') {
-            if (opts.exclude.test(file)) return;
-          } else if (Object.prototype.toString.call(opts.exclude) === '[object Array]') {
-            for (var i = 0; i < opts.exclude.length; i++) {
-              if (opts.exclude[i].test(file)) return;
-            }
+        
+          if (blacklistedSelector(opts.selectorBlackList, rule.selector)) isBreak = true;
+        
+          if (!validateParams(rule.parent.params, opts.mediaQuery)) isBreak = true;
+        
+          if (isBreak) {
+            rule.isBreak = isBreak;
           }
-        }
-      
-        if (blacklistedSelector(opts.selectorBlackList, rule.selector)) return;
-      
-        if (opts.landscape && !rule.parent.params) {
-          var landscapeRule = rule.clone().removeAll();
-      
-          rule.walkDecls(function(decl) {
+        },
+
+        RuleExit(rule) {
+          if (rule.landscapeRule && !rule.isHandleLandscape && rule.landscapeRule.nodes.length > 0) {
+            landscapeRules.push(rule.landscapeRule);
+            rule.landscapeRule = undefined
+            rule.isHandleLandscape = true;
+          }
+        },
+        Declaration(decl) {
+          const rule = decl.parent && decl.parent.type === 'rule' ? decl.parent : undefined
+
+          if(rule.isBreak) return
+
+          // 判断是否添加landscape样式
+          if (opts.landscape && rule && !rule.isHandleLandscape && !rule.parent.params) {
             if (decl.value.indexOf(opts.unitToConvert) === -1) return;
             if (!satisfyPropList(decl.prop)) return;
-      
-            landscapeRule.append(decl.clone({
+
+            var landscapeDecl = decl.clone({
               value: decl.value.replace(pxRegex, createPxReplace(opts, opts.landscapeUnit, opts.landscapeWidth))
-            }));
-          });
-      
-          if (landscapeRule.nodes.length > 0) {
-            landscapeRules.push(landscapeRule);
+            })
+
+            if (!rule.landscapeRule) {
+              rule.landscapeRule = rule.clone().removeAll();
+            }
+            rule.landscapeRule.append(landscapeDecl);
           }
-        }
-      
-        if (!validateParams(rule.parent.params, opts.mediaQuery)) return;
-      
-        rule.walkDecls(function(decl, i) {
+
+          // 处理单位转化
           if (decl.value.indexOf(opts.unitToConvert) === -1) return;
           if (!satisfyPropList(decl.prop)) return;
-      
+
+
           var prev = decl.prev();
           // prev declaration is ignore conversion comment at same line
           if (prev && prev.type === 'comment' && prev.text === ignoreNextComment) {
@@ -109,7 +135,7 @@ var plugin = function(options) {
               return;
             }
           }
-      
+
           var unit;
           var size;
           var params = rule.parent.params;
@@ -123,24 +149,15 @@ var plugin = function(options) {
           }
       
           var value = decl.value.replace(pxRegex, createPxReplace(opts, unit, size));
-      
+
           if (declarationExists(decl.parent, decl.prop, value)) return;
-      
+        
           if (opts.replace) {
             decl.value = value;
           } else {
-            decl.parent.insertAfter(i, decl.clone({ value: value }));
+            decl.parent.insertAfter(decl, decl.clone({ value: value }));
           }
-        });
-      });
-      
-      if (landscapeRules.length > 0) {
-        var landscapeRoot = new AtRule({ params: '(orientation: landscape)', name: 'media' });
-      
-        landscapeRules.forEach(function(rule) {
-          landscapeRoot.append(rule);
-        });
-        css.append(landscapeRoot);
+        }
       }
     }
   }

@@ -1,5 +1,5 @@
 {
-  "name": "@gh_lantu/postcss8-px-to-viewport",
+  "name": "@gh_lantu/postcss-8-px-to-viewport",
   "description": "A CSS post-processor that converts px to viewport units (vw, vh, vmin, vmax).",
   "version": "1.0.0",
   "author": "bruce",
